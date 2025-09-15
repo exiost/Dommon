@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Domain Monitor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Inter, 'Helvetica Neue', Arial; }
+    .glass { background: rgba(255,255,255,0.08); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.15); }
+    .btn-icon{ display:inline-flex; align-items:center; justify-content:center; width:2.25rem; height:2.25rem; border-radius:9999px; font-size:1rem; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+    .tooltip{ position:absolute; top:-2rem; left:50%; transform:translateX(-50%); padding:.25rem .5rem; border-radius:.375rem; font-size:.75rem; background:#0f172a; border:1px solid #334155; color:#e2e8f0; opacity:0; pointer-events:none; transition:opacity .15s ease; white-space:nowrap; }
+    .group:hover .tooltip{ opacity:1; }
+    th.sortable { cursor: pointer; user-select: none; }
+    th.sortable .caret { opacity:.6; margin-left:.25rem; }
+    pre.wrap { white-space: pre-wrap; word-wrap: break-word; }
+    .form-checkbox { width: 1.25rem; height: 1.25rem; margin-top: 0.125rem; }
+	@keyframes pulse {
+      50% {
+        opacity: .2;
+      }
+    }
+    .animate-pulse-soft {
+      animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+  <div class="max-w-7xl mx-auto p-4 md:p-8" x-data="app()" x-init="init()">
+
+    <header class="flex items-center justify-between mb-6">
+      <h1 class="text-2xl md:text-3xl font-bold">🛰️ Domain Monitor</h1>
+      <div class="flex items-center gap-3">
+        <div class="relative group">
+          <button @click="openSettings()" class="btn-icon bg-slate-600 hover:bg-slate-500">⚙️</button>
+          <div class="tooltip">Settings</div>
+        </div>
+        <div class="flex items-center gap-2 glass px-2 py-1 rounded-xl">
+            <button class="px-3 py-1 rounded-lg bg-indigo-500 hover:bg-indigo-600 font-semibold inline-flex items-center gap-2 disabled:opacity-60" @click="refresh()" :disabled="loading.refresh">
+              <span x-show="!loading.refresh">Refresh</span>
+              <span x-show="loading.refresh" class="inline-flex items-center gap-1">
+                <span class="inline-block w-4 h-4 border-2 border-white/50 border-t-transparent rounded-full animate-spin"></span>
+                ...
+              </span>
+            </button>
+            <select x-model.number="settings.dashboard_refresh_seconds" @change="updateRefreshInterval()" class="bg-transparent border-0 text-slate-200 focus:ring-0 cursor-pointer">
+              <template x-for="interval in refreshIntervalOptions">
+                <option :value="interval" class="bg-slate-800" x-text="interval + 's'"></option>
+              </template>
+            </select>
+        </div>
+        <button class="px-4 py-2 rounded-xl bg-fuchsia-500 hover:bg-fuchsia-600 font-semibold" @click="openImport()">Import</button>
+        <button class="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 font-semibold" @click="openAdd()">+ Add Domain</button>
+      </div>
+    </header>
+
+    <section class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+      <div class="glass rounded-2xl p-4"><div class="text-sm text-slate-300">Total Domains</div><div class="text-3xl font-bold" x-text="domains.length"></div></div>
+      <div class="glass rounded-2xl p-4"><div class="text-sm text-slate-300">Online</div><div class="text-3xl font-bold" x-text="latest.filter(d=>d.online===1).length"></div></div>
+      <div class="glass rounded-2xl p-4"><div class="text-sm text-slate-300">Avg Resp. Time</div><div class="text-3xl font-bold" x-text="avgResp() + ' ms'"></div></div>
+      <div class="glass rounded-2xl p-4"><div class="text-sm text-slate-300">Total Results</div><div class="text-3xl font-bold" x-text="latest.length"></div></div>
+    </section>
+
+    <div class="overflow-x-auto glass rounded-2xl">
+      <table class="min-w-full divide-y divide-slate-700">
+        <thead class="bg-slate-800/50">
+          <tr>
+            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider sortable" @click="sortBy('label')">Label <span class="caret" x-text="sortIndicator('label')"></span></th>
+            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider sortable" @click="sortBy('next')">Next Check <span class="caret" x-text="sortIndicator('next')"></span></th>
+            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider sortable" @click="sortBy('online')">Online <span class="caret" x-text="sortIndicator('online')"></span></th>
+            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider sortable" @click="sortBy('http')">HTTP (REST) <span class="caret" x-text="sortIndicator('http')"></span></th>
+            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider sortable" @click="sortBy('resp')">Resp (ms) <span class="caret" x-text="sortIndicator('resp')"></span></th>
+            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider sortable" @click="sortBy('posts')">WP Posts <span class="caret" x-text="sortIndicator('posts')"></span></th>
+            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider sortable" @click="sortBy('future')">Future Post <span class="caret" x-text="sortIndicator('future')"></span></th>
+            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider sortable" @click="sortBy('last')">Last Scheduled <span class="caret" x-text="sortIndicator('last')"></span></th>
+            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider sortable" @click="sortBy('bing')">Bing Indexed <span class="caret" x-text="sortIndicator('bing')"></span></th>
+            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider sortable" @click="sortBy('whois')">WHOIS Expiry <span class="caret" x-text="sortIndicator('whois')"></span></th>
+            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-800">
+          <template x-for="row in sortedLatest()" :key="row.domain_id">
+            <tr class="hover:bg-slate-800/30">
+              <td class="px-4 py-3 font-semibold" x-text="row.label"></td>
+              <td class="px-4 py-3"><span class="px-2 py-0.5 rounded-md text-xs font-mono" :class="countdownInfo(row).cls" x-text="countdownInfo(row).text"></span></td>
+              <td class="px-4 py-3">
+				  <div class="flex items-center gap-2">
+					<span class="px-2 py-1 rounded-full text-xs font-bold" 
+						  :class="getOnlineStatus(row.online).cls" 
+						  x-text="getOnlineStatus(row.online).text"></span>
+
+					<div class="relative group" x-show="row.used_backup == 1">
+					  <span class="cursor-pointer text-base animate-pulse-soft" :style="{ animationDelay: '-' + (Math.random() * 2) + 's' }">☁️</span>
+					  <div class="tooltip w-48 text-center z-10">
+						Hasil dari checker via api karena cek lokal gagal.
+					  </div>
+					</div>
+
+					<div class="relative group" x-show="row.online !== 1 && row.error_message">
+					  <button class="btn-icon w-5 h-5 bg-amber-500/90 hover:bg-amber-400 text-slate-900 text-xs font-extrabold" title="Detail Masalah" @click="openDown(row)">!</button>
+					  <div class="tooltip">Detail Masalah</div>
+					</div>
+				  </div>
+				</td>
+              <td class="px-4 py-3"><div class="flex items-center gap-2"><span x-text="row.http_status === -200 ? 200 : (row.http_status ?? '-')"></span><div class="relative group" x-show="row.http_status && !is2xx3xx(row.http_status)"><span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-amber-500 text-slate-900 text-[10px] font-extrabold">!</span><div class="tooltip" x-text="restIssueText(row)"></div></div></div></td>
+              <td class="px-4 py-3" x-text="row.response_time_ms ?? '-'"></td>
+              <td class="px-4 py-3">
+				  <div class="flex items-center gap-2">
+					<span x-text="row.posts_count ?? '-'"></span>
+
+					<div class="relative group" x-show="row.rest_fallback == 1">
+					  <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-sky-500 text-slate-900 text-[10px] font-extrabold cursor-pointer">!</span>
+					  <div class="tooltip w-64 text-center z-10">
+						Otentikasi gagal. Angka ini adalah jumlah post publik.
+					  </div>
+					</div>
+					<div class="relative group" x-show="row.bot_verification==1 && row.rest_fallback != 1">
+					  <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-amber-500 text-slate-900 text-[10px] font-extrabold">!</span>
+					  <div class="tooltip">Bot verification terdeteksi. WP endpoints bisa terblokir.</div>
+					</div>
+				  </div>
+				</td>
+              <td class="px-4 py-3" x-text="row.future_count ?? '-'"></td>
+              <td class="px-4 py-3">
+                <div class="flex items-center gap-2">
+                  <span x-text="fmtLastScheduled(row)"></span>
+                  <button x-show="hasContentScheduleIssue(row)" @click="openScheduleWarning(row)" class="w-5 h-5 rounded-full bg-amber-500/90 text-slate-900 text-xs font-extrabold leading-5 text-center" title="Info Jadwal">!</button>
+                </div>
+              </td>
+              <td class="px-4 py-3" x-text="row.bing_index_count ?? '-'"></td>
+              <td class="px-4 py-3"><div class="flex items-center gap-2"><span x-text="fmtDate(row.whois_expiry)"></span><button x-show="hasWhoisIssue(row)" @click="openWhois(row)" class="w-5 h-5 rounded-full bg-amber-500/90 text-slate-900 text-xs font-extrabold leading-5 text-center" title="Info">!</button></div></td>
+              <td class="px-4 py-3"><div class="flex items-center gap-2"><div class="relative group"><button class="btn-icon bg-blue-500/80 hover:bg-blue-600 disabled:opacity-60" @click="scan(row.domain_id)" :disabled="isRowBusy(row.domain_id)" title="Scan sekarang"><template x-if="!isScanning(row.domain_id)"><span>🔄</span></template><template x-if="isScanning(row.domain_id)"><span class="inline-block w-4 h-4 border-2 border-white/70 border-t-transparent rounded-full animate-spin"></span></template></button><div class="tooltip">Scan sekarang</div></div><div class="relative group"><button class="btn-icon bg-purple-500/80 hover:bg-purple-600 disabled:opacity-60" @click="scanWhois(row.domain_id)" :disabled="isRowBusy(row.domain_id)" title="Scan + WHOIS"><template x-if="!isScanningWhois(row.domain_id)"><span>🕵️</span></template><template x-if="isScanningWhois(row.domain_id)"><span class="inline-block w-4 h-4 border-2 border-white/70 border-t-transparent rounded-full animate-spin"></span></template></button><div class="tooltip">Scan + WHOIS</div></div><div class="relative group"><button class="btn-icon bg-yellow-500/80 hover:bg-yellow-600 disabled:opacity-60" @click="edit(row.domain_id)" :disabled="isRowBusy(row.domain_id)" title="Edit domain">✏️</button><div class="tooltip">Edit domain</div></div><div class="relative group"><button class="btn-icon bg-rose-500/80 hover:bg-rose-600 disabled:opacity-60" @click="remove(row.domain_id)" :disabled="isRowBusy(row.domain_id)" title="Hapus domain"><template x-if="loading.deleteId !== row.domain_id"><span>🗑️</span></template><template x-if="loading.deleteId === row.domain_id"><span class="inline-block w-4 h-4 border-2 border-white/70 border-t-transparent rounded-full animate-spin"></span></template></button><div class="tooltip">Hapus domain</div></div></div></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+
+    <div x-show="showModal" @click.self="close()" class="fixed inset-0 bg-black/50 flex items-center justify-center p-4" style="display:none"><div class="glass w-full max-w-2xl rounded-2xl p-6 max-h-[85vh] overflow-y-auto"><h2 class="text-xl font-bold mb-4" x-text="editing ? 'Edit Domain' : 'Add Domain'"></h2><div class="grid grid-cols-1 md:grid-cols-2 gap-4"><div><label class="text-sm text-slate-300">Label</label><input class="w-full mt-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700" x-model="form.label" placeholder="My Blog"/></div><div><label class="text-sm text-slate-300">URL</label><input class="w-full mt-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700" x-model="form.url" placeholder="https://example.com"/></div><div class="md:col-span-2"><label class="text-sm text-slate-300">WP REST Base (optional)</label><input class="w-full mt-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700" x-model="form.wp_api_base" placeholder="https://example.com/wp-json"/></div><div><label class="text-sm text-slate-300">WP User (optional)</label><input class="w-full mt-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700" x-model="form.wp_user" placeholder="wp_user"/></div><div><label class="text-sm text-slate-300">WP/App Password (optional)</label><input type="password" class="w-full mt-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700" x-model="form.wp_app_password" placeholder="abcd efgh ijkl mnop"/></div><div><label class="text-sm text-slate-300">Check Interval (minutes)</label><input type="number" min="1" class="w-full mt-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700" x-model.number="form.check_interval_minutes" placeholder="30"/></div><div><label class="text-sm text-slate-300">Enabled</label><select class="w-full mt-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700" x-model.number="form.is_enabled"><option :value="1">Yes</option><option :value="0">No</option></select></div><div class="md:col-span-2"><label class="text-sm text-slate-300">Bing Query Override (optional)</label><input class="w-full mt-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700" x-model="form.bing_query_override" placeholder="site:example.com -inurl:tag"/></div></div><div class="mt-6 p-4 rounded-xl bg-slate-800/60 border border-slate-700"><div class="font-semibold mb-2">REST API Background</div><div class="grid grid-cols-1 md:grid-cols-2 gap-4"><div><label class="text-sm text-slate-300">REST Check Interval (minutes)</label><input type="number" min="1" class="w-full mt-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700" x-model.number="form.rest_check_interval_minutes" placeholder="600"/><p class="text-xs text-slate-400 mt-1">Jadwal khusus untuk cek WP REST.</p></div><div><label class="text-sm text-slate-300">Next REST Check</label><div class="mt-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 inline-flex items-center gap-2"><span class="px-2 py-0.5 rounded-md text-xs font-mono" :class="restCountdownInfo().cls" x-text="restCountdownInfo().text"></span></div></div></div></div><template x-if="test"><div class="mt-5 p-4 rounded-xl bg-slate-800/60 border border-slate-700"><div class="font-semibold mb-2">Test Result</div><div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm"><div><span class="text-slate-400">Online (Homepage 2xx–3xx):</span> <span x-text="fmtOnline(test?.steps?.online)"></span></div><div><span class="text-slate-400">HTTP Homepage:</span> <span x-text="test?.steps?.online?.httpStatus ?? '-'"></span></div><div><span class="text-slate-400">HTTP REST API:</span> <span x-text="test?.steps?.wp?.wpHttpStatus ?? '-'"></span></div><div><span class="text-slate-400">WP Posts:</span> <span x-text="test?.steps?.wp?.postsCount ?? '-'"></span></div><div><span class="text-slate-400">Future Post:</span> <span x-text="test?.steps?.wp?.futureCount ?? '-'"></span></div><div><span class="text-slate-400">Last Scheduled:</span> <span x-text="fmtLastScheduledTest(test?.steps?.wp)"></span></div><div><span class="text-slate-400">Bing Indexed:</span> <span x-text="test?.steps?.bing?.count ?? '-'"></span></div><div class="md:col-span-2"><span class="text-slate-400">WHOIS expiry:</span> <span x-text="fmtDate(test?.steps?.whois?.expiry)"></span></div><div class="md:col-span-2" x-show="test?.steps?.online?.botVerification || test?.steps?.wp?.wpBlocked"><div class="p-3 rounded-lg bg-amber-500/15 border border-amber-400/30 text-amber-200"><div class="font-semibold mb-1">Bot verification terdeteksi</div><div class="space-y-1"><div x-show="test?.steps?.online?.botVerification">Sumber: Homepage — <span x-text="test?.steps?.online?.botReason || '-'"></span></div><div x-show="test?.steps?.wp?.wpBlocked">Sumber: WP REST — <span x-text="test?.steps?.wp?.wpBlockedReason || '-'"></span></div><div x-show="test?.steps?.wp?.wpRawErrorBody" class="mt-2 pt-2 border-t border-amber-400/20"><div class="text-sm text-slate-400 mb-1">Tampilan Asli (Raw Response):</div><pre class="w-full text-xs bg-slate-900/50 rounded-md p-2 max-h-40 overflow-auto whitespace-pre-wrap" x-text="test.steps.wp.wpRawErrorBody"></pre></div></div></div></div></div></template><div class="flex justify-end gap-3 mt-6"><button class="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600" @click="close()">Cancel</button><button class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 inline-flex items-center gap-2 disabled:opacity-60" @click="testConnection()" :disabled="testing"><span x-show="!testing">Test Connection</span><span x-show="testing" class="inline-flex items-center gap-2"><span class="inline-block w-4 h-4 border-2 border-white/70 border-t-transparent rounded-full animate-spin"></span>Testing...</span></button><button class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 inline-flex items-center gap-2 disabled:opacity-60" @click="save()" :disabled="loading.save"><span x-show="!loading.save">Save</span><span x-show="loading.save" class="inline-flex items-center gap-2"><span class="inline-block w-4 h-4 border-2 border-white/70 border-t-transparent rounded-full animate-spin"></span>Saving...</span></button></div></div></div>
+    
+	<div x-show="showSettingsModal" @click.self="showSettingsModal=false" class="fixed inset-0 bg-black/50 flex items-center justify-center p-4" style="display:none">
+		<div class="glass w-full max-w-2xl rounded-2xl p-6 max-h-[85vh] overflow-y-auto">
+		<div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold">⚙️ Pengaturan Notifikasi</h2><button @click="showSettingsModal=false" class="text-2xl leading-none">&times;</button></div>
+		<div class="space-y-5"><div><div class="font-semibold mb-2 border-b border-slate-700 pb-1">Koneksi WA Gateway</div><div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2"><div><label class="text-sm text-slate-300">Endpoint URL</label><input class="w-full mt-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700" x-model="settings.endpoint"/></div><div><label class="text-sm text-slate-300">API Key / Token</label><input class="w-full mt-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700" x-model="settings.api_key"/></div><div><label class="text-sm text-slate-300">Nomor Sender</label><input class="w-full mt-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700" x-model="settings.sender" placeholder="628..."/></div></div></div>
+		<div>
+		<div class="font-semibold mb-2 border-b border-slate-700 pb-1">Penerima & Pengaturan Umum</div>
+		<!-- START VERCEL -->
+		<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
+          <div class="flex items-end md:col-span-2">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" class="form-checkbox rounded bg-slate-800 border-slate-600 text-indigo-500 focus:ring-indigo-500" x-model="settings.use_backup_checker"/>
+              <span class="text-slate-200">Gunakan api checker Vercel☁️ jika cek lokal gagal</span>
+            </label>
+          </div>
+        </div>
+		<!-- END VERCEL -->
+		
+		<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2"><div><label class="text-sm text-slate-300">No. HP Tujuan Notifikasi</label><input class="w-full mt-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700" x-model="settings.recipient" placeholder="08... atau 628..."/></div>
+		<div><label class="text-sm text-slate-300">Delay Notifikasi (menit)</label><input type="number" min="0" class="w-full mt-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700" x-model.number="settings.notification_delay_minutes"/></div>
+		<div class="flex items-end md:col-span-2"><label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" class="form-checkbox rounded bg-slate-800 border-slate-600 text-indigo-500 focus:ring-indigo-500" x-model="settings.enabled"/><span class="text-slate-200">Aktifkan Notifikasi</span></label></div></div></div>
+		<div>
+		<div class="font-semibold mb-2 border-b border-slate-700 pb-1">Kirim Notifikasi Jika...</div>
+		<div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2 mt-2">
+		  <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" class="form-checkbox rounded bg-slate-800 border-slate-600 text-indigo-500 focus:ring-indigo-500" x-model="settings.trigger_down"/><span class="text-slate-200">Domain terdeteksi DOWN</span></label>
+		  <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" class="form-checkbox rounded bg-slate-800 border-slate-600 text-indigo-500 focus:ring-indigo-500" x-model="settings.trigger_online"/><span class="text-slate-200">Domain kembali ONLINE</span></label>
+		  <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" class="form-checkbox rounded bg-slate-800 border-slate-600 text-indigo-500 focus:ring-indigo-500" x-model="settings.trigger_homepage_auth_error"/><span class="text-slate-200">Akses Homepage Ditolak (401/403)</span></label>
+		  <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" class="form-checkbox rounded bg-slate-800 border-slate-600 text-indigo-500 focus:ring-indigo-500" x-model="settings.trigger_rest_error"/><span class="text-slate-200">WordPress REST API Error</span></label>
+		  <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" class="form-checkbox rounded bg-slate-800 border-slate-600 text-indigo-500 focus:ring-indigo-500" x-model="settings.trigger_rest_ok"/><span class="text-slate-200">WordPress REST API Normal</span></label>
+		  <label class="flex items-center gap-2 cursor-pointer col-span-2"><input type="checkbox" class="form-checkbox rounded bg-slate-800 border-slate-600 text-indigo-500 focus:ring-indigo-500" x-model="settings.trigger_content_schedule"/><span class="text-slate-200">Jadwal konten akan habis (sisa &lt;= </span><input type="number" class="w-20 px-2 py-1 rounded-md bg-slate-800 border border-slate-700" x-model.number="settings.content_schedule_threshold"/><span class="text-slate-200"> post)</span></label>
+		  <label class="flex items-center gap-2 cursor-pointer col-span-2"><input type="checkbox" class="form-checkbox rounded bg-slate-800 border-slate-600 text-indigo-500 focus:ring-indigo-500" x-model="settings.trigger_whois"/><span class="text-slate-200">WHOIS akan expired dalam</span><input type="number" class="w-20 px-2 py-1 rounded-md bg-slate-800 border border-slate-700" x-model.number="settings.whois_days"/><span class="text-slate-200">hari (reminder harian)</span></label>
+		</div></div></div>
+		
+		<div class="flex justify-end gap-3 mt-6"><button class="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600" @click="showSettingsModal=false">Cancel</button><button class="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 inline-flex items-center gap-2 disabled:opacity-60" @click="testNotification()" :disabled="loading.testNotification"><span x-show="!loading.testNotification">Test Notification</span><span x-show="loading.testNotification" class="inline-flex items-center gap-2"><span class="inline-block w-4 h-4 border-2 border-white/70 border-t-transparent rounded-full animate-spin"></span>Sending...</span></button><button class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 inline-flex items-center gap-2 disabled:opacity-60" @click="saveSettings()" :disabled="loading.save"><span x-show="!loading.save">Save Settings</span><span x-show="loading.save" class="inline-flex items-center gap-2"><span class="inline-block w-4 h-4 border-2 border-white/70 border-t-transparent rounded-full animate-spin"></span>Saving...</span></button></div>
+		</div>
+	</div>
+
+    <div x-show="whoisOpen" @click.self="whoisOpen=false" class="fixed inset-0 bg-black/40 flex items-center justify-center p-4" style="display:none"><div class="glass w-full max-w-lg rounded-2xl p-5"><div class="flex items-center justify-between mb-3"><div class="text-lg font-semibold">WHOIS Info</div><button class="px-3 py-1 rounded-lg bg-slate-700 hover:bg-slate-600" @click="whoisOpen=false">Close</button></div><div class="space-y-2 text-sm"><div><span class="text-slate-400">Label:</span> <span x-text="whoisRow?.label"></span></div><div><span class="text-slate-400">Domain:</span> <a :href="whoisRow?.url" class="text-indigo-300 hover:underline" target="_blank" x-text="whoisRow?.url"></a></div><div><span class="text-slate-400">Expiry:</span> <span x-text="fmtDate(whoisRow?.whois_expiry)"></span> <span x-show="whoisDays!==null">(<span x-text="whoisDays"></span> hari lagi)</span></div><div><span class="text-slate-400">Nameservers:</span> <span x-text="whoisRow?.nameservers || '-'"></span></div><template x-if="whoisIssueText"><div class="p-3 rounded-lg bg-amber-500/15 border border-amber-400/30 text-amber-200"><div class="font-semibold mb-1">Attention</div><div x-text="whoisIssueText"></div></div></template></div></div></div>
+    <div x-show="downOpen" @click.self="downOpen=false" class="fixed inset-0 bg-black/40 flex items-center justify-center p-4" style="display:none"><div class="glass w-full max-w-lg rounded-2xl p-5"><div class="flex items-center justify-between mb-3"><div class="text-lg font-semibold">Detail Masalah</div><button class="px-3 py-1 rounded-lg bg-slate-700 hover:bg-slate-600" @click="downOpen=false">Close</button></div><div class="space-y-2 text-sm"><div><span class="text-slate-400">Label:</span> <span x-text="downRow?.label"></span></div><div><span class="text-slate-400">Domain:</span> <a :href="downRow?.url" class="text-indigo-300 hover:underline" target="_blank" x-text="downRow?.url"></a></div><div class="mt-2 p-3 rounded-lg bg-slate-800/60 border border-slate-700"><div class="font-semibold mb-2 text-slate-300">Pesan Error Ringkas:</div><pre class="wrap" x-text="downRow?.error_message || 'Tidak ada detail.'"></pre></div><div x-show="downRow?.raw_error_body" class="mt-2 p-3 rounded-lg bg-slate-800/60 border border-slate-700"><div class="font-semibold mb-2 text-slate-300">Tampilan Asli (Raw Response):</div><pre class="w-full text-xs bg-slate-900/50 rounded-md p-2 max-h-40 overflow-auto whitespace-pre-wrap" x-text="downRow?.raw_error_body"></pre></div></div></div></div>
+    <div x-show="showImport" @click.self="closeImport()" class="fixed inset-0 bg-black/50 flex items-center justify-center p-4" style="display:none"><div class="glass w-full max-w-3xl rounded-2xl p-6"><h2 class="text-xl font-bold mb-4">Import Domains</h2><p class="text-sm text-slate-300 mb-2">Format per baris: <code>URL;USER;PASS;CHECK_INTERVAL;REST_INTERVAL;ENABLED</code></p><p class="text-xs text-slate-400 mb-3">Kolom <code>CHECK_INTERVAL</code> dan <code>REST_INTERVAL</code> (dalam menit) bersifat opsional. Kosongkan untuk memakai default.</p><textarea class="w-full h-56 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 font-mono text-sm" x-model="importText" placeholder="https://domain.com;user;pass;60;720;1&#10;https://domain2.com;user2;pass2;;;0"></textarea><div class="mt-3" x-show="importResult"><div class="text-sm">Imported: <span class="font-semibold" x-text="importResult?.created || 0"></span> / <span x-text="importResult?.total || 0"></span></div><div class="max-h-40 overflow-auto mt-2 text-xs bg-slate-800/60 border border-slate-700 rounded-lg p-2"><template x-for="r in importResult?.results || []" :key="r.line + '_' + (r.id || r.url)"><div class="py-0.5"><span class="font-mono">#<span x-text="r.line"></span></span>: <span x-text="r.url"></span><template x-if="r.ok"><span class="text-emerald-300"> — OK (id <span x-text="r.id"></span>, enabled <span x-text="r.enabled"></span>)</span></template><template x-if="!r.ok && r.skipped"><span class="text-amber-300"> — SKIP (<span x-text="r.reason"></span>)</span></template><template x-if="!r.ok && !r.skipped"><span class="text-rose-300"> — ERROR (<span x-text="r.error"></span>)</span></template></div></template></div></div><div class="flex justify-end gap-3 mt-5"><button class="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600" @click="closeImport()" :disabled="importing">Close</button><button class="px-4 py-2 rounded-xl bg-fuchsia-600 hover:bg-fuchsia-500 inline-flex items-center gap-2 disabled:opacity-60" @click="doImport()" :disabled="importing || !importText.trim()"><span x-show="!importing">Import</span><span x-show="importing" class="inline-flex items-center gap-2"><span class="inline-block w-4 h-4 border-2 border-white/70 border-t-transparent rounded-full animate-spin"></span>Importing...</span></button></div></div></div>
+    <div x-show="showScheduleWarningModal" @click.self="showScheduleWarningModal=false" class="fixed inset-0 bg-black/40 flex items-center justify-center p-4" style="display:none"><div class="glass w-full max-w-lg rounded-2xl p-5"><div class="flex items-center justify-between mb-3"><div class="text-lg font-semibold">⚠️ Peringatan Jadwal Konten</div><button class="px-3 py-1 rounded-lg bg-slate-700 hover:bg-slate-600" @click="showScheduleWarningModal=false">Tutup</button></div><div class="space-y-3 text-sm"><div><span class="text-slate-400">Label:</span> <span class="font-semibold" x-text="scheduleWarningRow?.label"></span></div><div><span class="text-slate-400">Domain:</span> <a :href="scheduleWarningRow?.url" class="text-indigo-300 hover:underline" target="_blank" x-text="scheduleWarningRow?.url"></a></div><div class="mt-2 pt-2 border-t border-slate-700 space-y-2"><div><span class="text-slate-400">Post Terjadwal:</span> <span class="font-bold text-rose-400" x-text="scheduleWarningRow?.future_count"></span></div><div><span class="text-slate-400">Total Post Terbit:</span> <span x-text="scheduleWarningRow?.posts_count ?? '-'"></span></div><div><span class="text-slate-400">Terakhir Cek:</span> <span x-text="scheduleWarningRow?.last_rest_check_at ? new Date(scheduleWarningRow.last_rest_check_at).toLocaleString('id-ID') : '-'"></span></div></div><div class="p-3 mt-2 rounded-lg bg-amber-500/15 border border-amber-400/30 text-amber-200"><div class="font-semibold mb-1">Perhatian</div><div>Tidak ada lagi postingan yang dijadwalkan untuk domain ini. Disarankan untuk segera menambahkan post terjadwal baru untuk menjaga situs tetap aktif.</div></div><div class="flex justify-end pt-3"><a :href="scheduleWarningRow?.url ? scheduleWarningRow.url.replace(/\/?$/, '/wp-admin/') : '#'" target="_blank" class="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 font-semibold">Buka WP Admin</a></div></div></div></div>
+    <div x-show="isBusy()" class="fixed top-4 right-4 z-50" style="display:none"><div class="glass rounded-xl px-3 py-2 flex items-center gap-2 shadow-lg"><span class="inline-block w-4 h-4 border-2 border-white/80 border-t-transparent rounded-full animate-spin"></span><span class="text-sm">Working...</span></div></div>
+  </div>
+
+  <script>
+  function app(){
+    return {
+      domains: [], latest: [], 
+      // 🔥 PERBAIKAN: Memberi nilai default untuk settings agar dropdown berfungsi saat load
+      settings: { dashboard_refresh_seconds: 15 }, 
+      showModal: false, showImport: false, showSettingsModal: false, whoisOpen: false, downOpen: false, showScheduleWarningModal: false,
+      editing: null, test: null, importText: '', importResult: null,
+      whoisRow: null, downRow: null, scheduleWarningRow: null,
+      whoisDays: null,
+      whoisIssueText: '',
+      form: { label:'', url:'', wp_api_base:'', wp_user:'', wp_app_password:'', check_interval_minutes:30, is_enabled:1, bing_query_override:'', rest_check_interval_minutes:600 },
+      loading: { refresh: false, save: false, deleteId: null, scan: {}, scanWhois: {}, settings: false, testNotification: false },
+      testing: false, importing: false,
+      nowTs: Date.now(), nowTimer: null,
+      pollHandle: null,
+      sortKey: 'label', sortDir: 'asc',
+      // 🔥 PERUBAHAN: Menambahkan opsi untuk dropdown
+      refreshIntervalOptions: [5, 10, 15, 30, 45, 60, 120, 300, 600],
+	  
+	  getOnlineStatus(onlineValue) {
+        if (onlineValue === 1) return { text: 'ONLINE', cls: 'bg-emerald-600/30 text-emerald-300' };
+        if (onlineValue === 2) return { text: 'CHECK', cls: 'bg-amber-600/30 text-amber-300' };
+        return { text: 'DOWN', cls: 'bg-rose-600/30 text-rose-300' };
+      },
+      
+      async testNotification() {
+        this.loading.testNotification = true;
+        try {
+          const r = await fetch('/api/settings/test', { method: 'POST' });
+          const result = await r.json();
+          if (result.ok) {
+            alert('Pesan tes terkirim! Silakan periksa WhatsApp Anda.');
+          } else {
+            alert(`Gagal mengirim pesan tes:\n\n${result.error}`);
+          }
+        } catch(e) {
+          alert(`Terjadi error:\n\n${e.message}`);
+        } finally {
+          this.loading.testNotification = false;
+        }
+      },
+      isEnabled(row){ return row?.is_enabled === 1; },
+      is2xx3xx(s){ 
+        const n = Number(s);
+        if (n === -200) return false;
+        return n >= 200 && n < 400; 
+      },
+      restIssueText(row){
+        const s = Number(row.http_status ?? 0);
+        let base = `REST status: ${s === -200 ? 200 : (s || '-')}`;
+        if(s === -200) base += ' — Koneksi berhasil, tapi data tidak valid (null).';
+        else if(s===401) base+=' — Unauthorized. Cek WP User & App Password.';
+        else if(s===403) base+=' — Forbidden. Mungkin diblokir firewall/WAF.';
+        else if(s>=500) base+=' — Server WP error.';
+        if(row.bot_verification==1) base+=' — Bot verification terdeteksi.';
+        return base;
+      },
+      fmtDate(s){
+        if(!s) return '-';
+        try { return new Date(s).toLocaleDateString('id-ID', {day:'2-digit',month:'2-digit',year:'numeric'}); }
+        catch { return '-'; }
+      },
+      fmtOnline(s){ return (s && s.online) ? 'ONLINE' : 'DOWN'; },
+      fmtLastScheduled(row){ return (row?.future_count > 0) ? this.fmtDate(row?.last_scheduled_post) : '-'; },
+      fmtLastScheduledTest(wp){ return (wp?.futureCount > 0) ? this.fmtDate(wp?.lastScheduledPost) : '-'; },
+      calculateCountdown(lastCheckStr, intervalMin) {
+        if (!lastCheckStr) return { text: 'Queued', cls: 'bg-amber-600/30 text-amber-200' };
+        const last = new Date(lastCheckStr).getTime();
+        if (isNaN(last)) return { text: '-', cls: 'bg-slate-700/60 text-slate-200' };
+        const next = last + intervalMin * 60 * 1000;
+        const diff = next - this.nowTs;
+        if (diff <= 0) return { text: 'Due', cls: 'bg-amber-600/30 text-amber-200' };
+        let sec = Math.floor(diff/1000);
+        const days = Math.floor(sec/86400); sec %= 86400;
+        const hrs = Math.floor(sec/3600); sec %= 3600;
+        const mins = Math.floor(sec/60); sec %= 60;
+        const pad = n => String(n).padStart(2, '0');
+        let text = '';
+        if (days > 0) text = `${days}d ${pad(hrs)}:${pad(mins)}:${pad(sec)}`;
+        else if (hrs > 0) text = `${hrs}:${pad(mins)}:${pad(sec)}`;
+        else text = `${pad(mins)}:${pad(sec)}`;
+        let cls = 'bg-emerald-600/20 text-emerald-200';
+        if (diff <= 60000) cls = 'bg-amber-600/30 text-amber-200';
+        return { text, cls };
+      },
+      countdownInfo(row) {
+        if (!this.isEnabled(row)) return { text: 'Disabled', cls: 'bg-slate-700/60 text-slate-300' };
+        const minutes = parseInt(row.check_interval_minutes || 0, 10);
+        if (!minutes) return { text: '-', cls: 'bg-slate-700/60 text-slate-200' };
+        return this.calculateCountdown(row.last_general_check_at, minutes);
+      },
+      restCountdownInfo() {
+        const intervalMin = Number(this.form?.rest_check_interval_minutes ?? 0);
+        if (!this.editing || !intervalMin) return { text: '-', cls: 'bg-slate-700/60 text-slate-200' };
+        const currentDomainData = this.latest.find(d => d.id === this.editing);
+        const lastCheckStr = currentDomainData ? currentDomainData.last_rest_check_at : this.form.last_rest_check_at;
+        return this.calculateCountdown(lastCheckStr, intervalMin);
+      },
+      hasContentScheduleIssue(row) {
+        // Logika di UI tidak perlu tahu threshold, cukup tampilkan '!' jika future_count adalah 0.
+        // Notifikasi backend yang akan menangani logika threshold.
+        return row.future_count === 0 && row.posts_count !== null;
+      },
+      openScheduleWarning(row) {
+        this.scheduleWarningRow = row;
+        this.showScheduleWarningModal = true;
+      },
+      hasWhoisIssue(row){
+        const exp=row.whois_expiry||''; const d=this.daysLeft(exp);
+        const nsEmpty=!row.nameservers || row.nameservers.trim()==='';
+        const err=(row.error_message||'').toLowerCase().includes('whois');
+        const warningDays = this.settings.whois_days || 360;
+        return (exp==='' || (d!==null && d <= warningDays)) || nsEmpty || err;
+      },
+      daysLeft(dateStr){
+        if(!dateStr) return null;
+        const ms = new Date(dateStr).getTime() - Date.now();
+        return Math.ceil(ms / (1000 * 60 * 60 * 24));
+      },
+      openWhois(row){
+        this.whoisRow=row; this.whoisDays=this.daysLeft(row.whois_expiry);
+        const msgs=[];
+        if(!row.whois_expiry) msgs.push('WHOIS expiry tidak tersedia.');
+        const warningDays = this.settings.whois_days || 360;
+        if(this.whoisDays!==null && this.whoisDays <= warningDays) {
+            msgs.push(`Domain akan kadaluarsa dalam ${this.whoisDays} hari.`);
+        }
+        if(!row.nameservers || !row.nameservers.trim()) msgs.push('Nameserver tidak terdeteksi.');
+        if((row.error_message||'').toLowerCase().includes('whois')) msgs.push('Ada error saat lookup WHOIS (coba Scan + WHOIS).');
+        this.whoisIssueText=msgs.join(' ');
+        this.whoisOpen=true;
+      },
+      openDown(row){ this.downRow=row; this.downOpen=true; },
+      sortBy(key){
+        if (this.sortKey === key) this.sortDir = (this.sortDir === 'asc' ? 'desc' : 'asc');
+        else { this.sortKey = key; this.sortDir = 'asc'; }
+      },
+      sortIndicator(key){ return (this.sortKey !== key) ? '' : (this.sortDir === 'asc' ? '▲' : '▼'); },
+      getSortValue(row, key){
+        switch(key){
+          case 'label': return (row.label || '').toLowerCase();
+          case 'next': return this.isEnabled(row) ? (new Date(row.last_general_check_at).getTime() || 0) : Infinity;
+          case 'online': return Number(row.online ?? 0);
+          case 'http': return Number(row.http_status ?? -1);
+          case 'resp': return Number(row.response_time_ms ?? Infinity);
+          case 'posts': return Number(row.posts_count ?? -1);
+          case 'future': return Number(row.future_count ?? -1);
+          case 'last': return new Date(row.last_scheduled_post).getTime() || -1;
+          case 'bing': return Number(row.bing_index_count ?? -1);
+          case 'whois': return new Date(row.whois_expiry).getTime() || -1;
+          default: return 0;
+        }
+      },
+      sortedLatest(){
+        return [...this.latest].sort((a,b)=>{
+          const va=this.getSortValue(a,this.sortKey), vb=this.getSortValue(b,this.sortKey);
+          const dir = this.sortDir === 'asc' ? 1 : -1;
+          if(va<vb) return -1*dir; if(va>vb) return 1*dir; return 0;
+        });
+      },
+      avgResp(){
+        const arr=this.latest.map(r=>r.response_time_ms).filter(Boolean);
+        if(!arr.length) return 0;
+        return Math.round(arr.reduce((a,b)=>a+b,0)/arr.length);
+      },
+      isScanning(id){ return !!this.loading.scan[id]; },
+      isScanningWhois(id){ return !!this.loading.scanWhois[id]; },
+      isRowBusy(id){ return this.isScanning(id) || this.isScanningWhois(id) || this.loading.deleteId===id; },
+      isBusy(){
+        return this.testing || this.loading.refresh || this.loading.save || this.loading.deleteId !== null || Object.values(this.loading.scan).some(Boolean) || Object.values(this.loading.scanWhois).some(Boolean);
+      },
+      async refresh(){
+        if (this.loading.refresh) return;
+        this.loading.refresh=true;
+        try{
+          this.domains = await (await fetch('/api/domains')).json();
+          this.latest  = await (await fetch('/api/results/latest')).json();
+        } finally { this.loading.refresh=false; }
+      },
+      openAdd(){
+        this.editing=null;
+        this.form={ label:'', url:'', wp_api_base:'', wp_user:'', wp_app_password:'', check_interval_minutes:30, is_enabled:1, bing_query_override:'', rest_check_interval_minutes:600 };
+        this.test=null; this.showModal=true;
+      },
+      edit(id){
+        const d = this.latest.find(x => x.id === id);
+        if(!d) return;
+        this.editing = id;
+        this.form = { ...JSON.parse(JSON.stringify(d)) };
+        this.test = null; this.showModal = true;
+      },
+      close(){ this.showModal=false; },
+      async testConnection(){
+        if(!this.form.url){ alert('URL wajib diisi.'); return; }
+        this.testing=true; this.test=null;
+        try{
+          const r=await fetch('/api/test-connection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(this.form)});
+          this.test=await r.json();
+        }catch(e){ this.test={ok:false,error:String(e)}; }
+        finally{ this.testing=false; }
+      },
+      async save(){
+        if(!this.form.label||!this.form.url){ alert('Label & URL wajib.'); return; }
+        this.loading.save=true;
+        try{
+          const payload = { ...this.form };
+          if (this.test?.steps) payload.__test_cache = this.test;
+          const url = this.editing ? '/api/domains/'+this.editing : '/api/domains';
+          const method = this.editing ? 'PUT' : 'POST';
+          await fetch(url, {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+          this.showModal=false;
+          await this.refresh();
+        } finally { this.loading.save=false; }
+      },
+      async remove(id){
+        if(!confirm('Hapus domain ini?')) return;
+        this.loading.deleteId=id;
+        try{ await fetch('/api/domains/'+id,{method:'DELETE'}); await this.refresh(); }
+        finally{ this.loading.deleteId=null; }
+      },
+      async scan(id, withWhois = false){
+        const key = withWhois ? 'scanWhois' : 'scan';
+        this.loading[key] = {...this.loading[key], [id]:true};
+        try{ 
+          await fetch(`/api/domains/${id}/scan${withWhois ? '?withWhois=1':''}`,{method:'POST'});
+          await this.refresh();
+        } finally { this.loading[key] = {...this.loading[key], [id]:false}; }
+      },
+      scanWhois(id){ this.scan(id, true); },
+      openImport(){ this.showImport=true; this.importText=''; this.importResult=null; },
+      closeImport(){ if(this.importing) return; this.showImport=false; },
+      async doImport(){
+        if(!this.importText.trim()) return;
+        this.importing=true; this.importResult=null;
+        try{
+          const r=await fetch('/api/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ text:this.importText })});
+          this.importResult=await r.json();
+          await this.refresh();
+        }catch(e){ this.importResult={ ok:false, error:String(e) }; }
+        finally{ this.importing=false; }
+      },
+      async openSettings() {
+        // 1. Simpan nilai interval refresh yang sedang dipilih di UI ke variabel sementara
+        const currentRefreshInterval = this.settings.dashboard_refresh_seconds;
+        
+        // 2. Ambil pengaturan terbaru dari server (seperti biasa)
+        const r = await fetch('/api/settings');
+        const serverSettings = await r.json();
+        
+        // 3. Timpa semua pengaturan dengan data baru dari server
+        this.settings = { ...this.settings, ...serverSettings };
+        
+        // 4. Kembalikan nilai interval refresh yang tadi disimpan.
+        //    Ini akan menimpa nilai 'dashboard_refresh_seconds' dari server dengan nilai pilihan Anda di UI.
+        this.settings.dashboard_refresh_seconds = currentRefreshInterval;
+        
+        this.showSettingsModal = true;
+      },
+      async saveSettings(){
+        this.loading.settings = true;
+        try {
+          // Simpan pengaturan ke server
+          await fetch('/api/settings', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(this.settings)
+          });
+          this.showSettingsModal = false;
+          this.updateRefreshInterval(); 
+        } finally {
+          this.loading.settings = false;
+        }
+      },
+      // 🔥 PERUBAHAN: Fungsi baru untuk mengelola timer auto-refresh
+      async updateRefreshInterval() { // Tambahkan 'async' di sini
+          // Bagian ini tetap sama, untuk mengatur ulang timer di browser
+          if(this.pollHandle) clearInterval(this.pollHandle); 
+          
+          const refreshIntervalMs = (this.settings.dashboard_refresh_seconds || 15) * 1000;
+          if (refreshIntervalMs > 0) {
+              console.log('Auto-refresh set to:', refreshIntervalMs, 'ms');
+              this.pollHandle = setInterval(() => {
+                  fetch('/api/results/latest').then(res => res.json()).then(data => { this.latest = data; });
+                  fetch('/api/domains').then(res => res.json()).then(data => { this.domains = data; });
+              }, refreshIntervalMs);
+          }
+
+          // --- BAGIAN BARU UNTUK MENYIMPAN ---
+          // Karena x-model sudah mengubah this.settings.dashboard_refresh_seconds,
+          // kita bisa langsung mengirim seluruh objek this.settings ke server.
+          try {
+              await fetch('/api/settings', {
+                  method: 'POST',
+                  headers: {'Content-Type': 'application/json'},
+                  // Kirim seluruh objek settings yang ada di state
+                  body: JSON.stringify(this.settings)
+              });
+              console.log('Refresh interval saved to settings.json');
+          } catch (e) {
+              console.error('Failed to save refresh interval:', e);
+              // Opsional: tampilkan notifikasi error jika gagal menyimpan
+          }
+      },
+      async init(){
+        try { 
+          const serverSettings = await (await fetch('/api/settings')).json();
+          this.settings = { ...this.settings, ...serverSettings };
+        } catch(e) { console.error("Could not load settings"); }
+        await this.refresh();
+        this.nowTimer=setInterval(()=>{ this.nowTs=Date.now(); },1000);
+        this.updateRefreshInterval(); // Jalankan auto-refresh saat pertama kali load
+      }
+    }
+  }
+  </script>
+</body>
+</html>
