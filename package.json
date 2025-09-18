@@ -1,3 +1,5 @@
+// package.json
+
 {
   "name": "domain-monitor",
   "version": "1.0.0",
@@ -9,34 +11,21 @@
     "node": ">=18.17.0"
   },
   "scripts": {
-    "start": "node src/server.js",
-    "start:pretty": "LOG_PRETTY=true node src/server.js",
-    "dev": "LOG_PRETTY=true NODE_ENV=development node --watch src/server.js",
-    "schema:apply": "node -e \"console.log('Schema is applied automatically by store.js on first run via better-sqlite3. You can also run src/schema.sql manually with the sqlite3 CLI if needed.')\"",
-    "lint": "node -e \"console.log('No linter configured. Add ESLint/Prettier if desired.')\""
+    "start": "node src/server.js"
   },
   "dependencies": {
-    "compression": "^1.7.4",
+    "@vercel/kv": "^1.0.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "helmet": "^7.1.0",
     "morgan": "^1.10.0"
-  },
-  "optionalDependencies": {
-    "better-sqlite3": "^9.6.0"
   },
   "keywords": [
     "monitoring",
     "uptime",
     "wordpress",
     "rest",
-    "scheduler",
-    "http",
-    "sqlite",
-    "logging",
-    "nodejs",
-    "express"
+    "scheduler"
   ],
   "author": "you",
   "license": "MIT"
