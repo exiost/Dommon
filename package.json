@@ -1,5 +1,3 @@
-// package.json
-
 {
   "name": "domain-monitor",
   "version": "1.0.0",
@@ -30,3 +28,4 @@
   "author": "you",
   "license": "MIT"
 }
+
